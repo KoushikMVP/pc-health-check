@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  TheMVP.in - Workstation Hang / Crash Diagnostic Collector  (Linux)
-#  Version: 1.1  (2026-10-31)  - adds idle / load / cooldown temperature logging
+#  Version: 1.2  (2026-11-06)  - ticket ID required in the file name, full previous-boot log
+#           1.1  (2026-10-31)  - adds idle / load / cooldown temperature logging
 #
 #  Usage:   sudo bash themvp-diag.sh <TICKET_ID> [--stress MIN] [--gpu-stress MIN] [--days N] [--no-install]
 #  Example: sudo bash themvp-diag.sh SID000616                         (logs + idle temps, ~4 min)
@@ -15,8 +16,9 @@
 #  smartmontools / rasdaemon / lm-sensors / stress-ng / gpu-burn (skip with --no-install).
 # =============================================================================
 
-VERSION="1.1"
+VERSION="1.2"
 TICKET="${1:-NOTICKET}"; shift || true
+TICKET="$(printf '%s' "$TICKET" | tr -cd 'A-Za-z0-9')"; [ -n "$TICKET" ] || TICKET=NOTICKET   # it becomes part of the file name
 STRESS_MIN=0; GPU_STRESS_MIN=0; DAYS=30; INSTALL=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -240,6 +242,8 @@ if have journalctl; then
   journalctl -k --no-pager --since "-${DAYS} days" > "$KLOG" 2>/dev/null
   journalctl --list-boots --no-pager > "$RAW/boots.txt" 2>/dev/null
   journalctl -b -1 -n 80 --no-pager > "$RAW/previous_boot_last80.txt" 2>/dev/null
+  # whole previous boot (capped): shows what the PC was doing in the hours before a hang, not only the last minute
+  journalctl -b -1 --no-pager 2>/dev/null | tail -n 20000 > "$RAW/previous_boot_full.txt"
 else
   dmesg -T > "$KLOG" 2>/dev/null
 fi
@@ -539,5 +543,8 @@ tar -czf "$OUT.tar.gz" -C "$(dirname "$OUT")" "$(basename "$OUT")" 2>/dev/null
 echo
 cat "$SUM"
 echo
-echo "DONE. Please email this file to support (reply to your ticket mail):"
+if [ "$TICKET" = "NOTICKET" ]; then
+  echo "NOTE: no ticket number was given. Please run it again with your ticket number, e.g.  sudo bash $0 SID000616"
+fi
+echo "DONE. Please email this file to support by replying to your ticket email:"
 echo "   $OUT.tar.gz"

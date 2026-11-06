@@ -30,7 +30,7 @@
 <header><h1><b>TheMVP</b> PC Health Check</h1></header>
 <main>
   <div class="card">
-    <label for="ticket">Your ticket number (optional)</label>
+    <label for="ticket">Your ticket number</label>
     <input id="ticket" placeholder="e.g. SID000616" autocomplete="off">
 
     <div class="tabs" role="group" aria-label="Operating system">
@@ -66,7 +66,7 @@
   const ticketBox = document.getElementById("ticket");
   const tabs = document.querySelectorAll(".tabs button");
 
-  const clean = s => s.replace(/[^A-Za-z0-9_-]/g, "");
+  const clean = s => s.replace(/[^A-Za-z0-9]/g, "");
   const COMMANDS = {
     windows: t => `powershell -NoProfile -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm ${RAW}/windows/run.ps1)))${t ? " -Ticket " + t : ""}"`,
     linux: t => `u=${RAW}/linux/themvp-diag.sh; f=$(mktemp); (curl -fsSL $u || wget -qO- $u) > $f && sudo bash $f ${t || "NOTICKET"}; rm -f $f`
@@ -77,9 +77,9 @@
   };
   const STEPS = {
     windows: ["Click Yes when Windows asks for permission.", "Wait about 1 minute and do not use the PC meanwhile.",
-              "A folder named TheMVP-diag-… opens on your Desktop. Send us the files in it."],
+              "A file named themvp-diag-….zip appears on your Desktop. Send us that file by replying to your ticket email."],
     linux: ["Type your password when asked (it is not shown while typing).", "Wait about 4 minutes and do not use the PC meanwhile.",
-            "Send us the themvp-diag-….tar.gz file from your home folder."]
+            "Send us the themvp-diag-….tar.gz file from your home folder by replying to your ticket email."]
   };
 
   function detect() {

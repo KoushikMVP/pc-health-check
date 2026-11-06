@@ -18,6 +18,9 @@
   -Windows at the installed Windows folder, e.g. -Windows D:\Windows — event logs
   and minidumps are read from there.
 
+.PARAMETER Ticket   TheMVP ticket number, e.g. SID000616. It is written into the report and the
+                    zip name (themvp-diag-<ticket>-<PC>-<date>-<time>.zip) so the service desk
+                    can check the report belongs to the ticket it was sent on.
 .PARAMETER Days     How far back to read event logs (default 30).
 .PARAMETER Out      Output folder (default: a "reports" folder next to the script).
 .PARAMETER Server   Optional bench server URL, e.g. http://192.168.1.10:8000
@@ -32,6 +35,7 @@
                     Analyzer. 0 = off (default).
 #>
 param(
+    [string]$Ticket = "",
     [int]$Days = 30,
     [string]$Windows = $env:SystemRoot,
     [string]$Out = (Join-Path $PSScriptRoot "reports"),
@@ -42,6 +46,8 @@ param(
     [int]$Trace = 0
 )
 $ErrorActionPreference = "SilentlyContinue"
+$CollectorVersion = "1.1"
+$Ticket = $Ticket -replace '[^A-Za-z0-9]', ''   # it becomes part of the zip name
 $since = (Get-Date).AddDays(-$Days)
 $offline = ($Windows.TrimEnd('\') -ne $env:SystemRoot.TrimEnd('\'))
 
@@ -204,29 +210,35 @@ $volumes = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-O
 
 # --- event log ---------------------------------------------------------------------
 $kp41 = Get-SysEvents @{ ProviderName = "Microsoft-Windows-Kernel-Power"; Id = 41 }
+$wer1001 = Get-SysEvents @{ ProviderName = "Microsoft-Windows-WER-SystemErrorReporting"; Id = 1001 }
 $bugchecks = @()
 foreach ($e in $kp41) {
     $code = [int64]$e.Properties[0].Value         # BugcheckCode; 0 = no blue screen
     if ($code -ne 0) { $bugchecks += ("0x{0:x}" -f $code) }
 }
-foreach ($e in (Get-SysEvents @{ ProviderName = "Microsoft-Windows-WER-SystemErrorReporting"; Id = 1001 })) {
+foreach ($e in $wer1001) {
     if ($e.Message -match "0x([0-9a-fA-F]{8})") { $bugchecks += ("0x{0:x}" -f [Convert]::ToInt64($Matches[1], 16)) }
 }
+$wheaEv = Get-SysEvents @{ ProviderName = "Microsoft-Windows-WHEA-Logger" }
 $whea = [ordered]@{}
-Get-SysEvents @{ ProviderName = "Microsoft-Windows-WHEA-Logger" } |
-    Group-Object Id | ForEach-Object { $whea["$($_.Name)"] = $_.Count }
+$wheaEv | Group-Object Id | ForEach-Object { $whea["$($_.Name)"] = $_.Count }
+$ev6008 = Get-SysEvents @{ ProviderName = "EventLog"; Id = 6008 }
+$diskEv = Get-SysEvents @{ ProviderName = "disk"; Id = 7, 51, 153 }
+$ntfsEv = @(Get-SysEvents @{ Id = 55 } | Where-Object { $_.ProviderName -match "Ntfs" })
+$tdrEv  = Get-SysEvents @{ ProviderName = "Display"; Id = 4101 }
+$thr37  = Get-SysEvents @{ ProviderName = "Microsoft-Windows-Kernel-Processor-Power"; Id = 37 }
 
 $events = [ordered]@{
     days             = $Days
     kp41             = $kp41.Count
     kp41_no_bugcheck = @($kp41 | Where-Object { [int64]$_.Properties[0].Value -eq 0 }).Count
     kp41_power_button = @($kp41 | Where-Object { (Get-EventData $_).LongPowerButtonPressDetected -eq "true" }).Count   # held power button = it froze, not a power loss
-    unexpected_6008  = (Get-SysEvents @{ ProviderName = "EventLog"; Id = 6008 }).Count
+    unexpected_6008  = $ev6008.Count
     whea             = $whea
-    disk             = (Get-SysEvents @{ ProviderName = "disk"; Id = 7, 51, 153 }).Count
-    ntfs             = @(Get-SysEvents @{ Id = 55 } | Where-Object { $_.ProviderName -match "Ntfs" }).Count
-    display_tdr      = (Get-SysEvents @{ ProviderName = "Display"; Id = 4101 }).Count
-    cpu_throttle_37  = (Get-SysEvents @{ ProviderName = "Microsoft-Windows-Kernel-Processor-Power"; Id = 37 }).Count
+    disk             = $diskEv.Count
+    ntfs             = $ntfsEv.Count
+    display_tdr      = $tdrEv.Count
+    cpu_throttle_37  = $thr37.Count
 }
 
 # --- boot performance: Windows times every boot and names what slowed it ------------------
@@ -464,6 +476,9 @@ if ($perf) {
 
 $report = [ordered]@{
     collector     = "themvp-bench/1"
+    collector_version = $CollectorVersion
+    ticket        = $Ticket
+    host          = $env:COMPUTERNAME
     collected_at  = (Get-Date).ToString("s")
     offline       = $offline
     admin         = $isAdmin
@@ -533,6 +548,50 @@ Write-Host ("Kernel-Power 41: {0} (no bugcheck: {1}) | WHEA: {2} | disk errors: 
 if ($boot.last_ms) { Write-Host ("Last boot: {0:N1} s | slowed by: {1}" -f ($boot.last_ms / 1000), (($culprits | ForEach-Object { $_.name }) -join ", ")) }
 if ($perf) { Write-Host ("Idle CPU {0}% | DPC {1}% | interrupts {2}% | disk busy {3}% | free RAM {4} MB" -f `
     $perf.cpu_pct, $perf.dpc_pct, $perf.interrupt_pct, $perf.disk_busy_pct, $perf.avail_mem_mb) }
+
+# --- raw evidence + one zip to send ------------------------------------------------------
+# The service desk recounts every figure above from these raw event lines instead of
+# trusting the JSON totals, so each count can be traced to the Windows record behind it.
+function Format-Event($e) {
+    $msg = "$($e.Message)" -replace "\s+", " "
+    if ($msg.Length -gt 400) { $msg = $msg.Substring(0, 400) + "..." }
+    $extra = ""
+    if ($e.ProviderName -eq "Microsoft-Windows-Kernel-Power" -and $e.Id -eq 41) {
+        $d = Get-EventData $e
+        $extra = " [BugcheckCode=$($d.BugcheckCode) PowerButton=$($d.LongPowerButtonPressDetected)]"
+    }
+    "{0} | {1} | {2} | {3} | {4}{5}" -f $e.TimeCreated.ToString("yyyy-MM-ddTHH:mm:ss"), $e.LevelDisplayName, $e.ProviderName, $e.Id, $msg, $extra
+}
+$raw = Join-Path $Out "raw"
+New-Item -ItemType Directory -Force -Path $raw | Out-Null
+$utf8 = New-Object Text.UTF8Encoding $false
+$counted = @(@($kp41) + @($wer1001) + @($wheaEv) + @($ev6008) + @($diskEv) + @($ntfsEv) + @($tdrEv) + @($thr37)) |
+    Where-Object { $_ } | Sort-Object TimeCreated
+$sysLines = @("# System events counted in the report, last $Days days (time | level | source | event id | message)") +
+    @($counted | ForEach-Object { Format-Event $_ })
+[IO.File]::WriteAllLines((Join-Path $raw "system-events.txt"), [string[]]$sysLines, $utf8)
+$appEv = @(Get-LogEvents "Application" @{ Level = 1, 2 } | Select-Object -First 2000)
+$appLines = @("# Application errors, last $Days days, newest first (max 2000)") + @($appEv | ForEach-Object { Format-Event $_ })
+[IO.File]::WriteAllLines((Join-Path $raw "application-events.txt"), [string[]]$appLines, $utf8)
+$bcLines = @("# Blue-screen codes: Kernel-Power 41 / WER 1001 events, then crash dump files") +
+    @(@($kp41 | Where-Object { [int64]$_.Properties[0].Value -ne 0 }) + @($wer1001) | Where-Object { $_ } | ForEach-Object { Format-Event $_ }) +
+    @(@($dumps) + @($liveDumps) | Where-Object { $_ } | ForEach-Object { ($_ | ConvertTo-Json -Compress -Depth 3) })
+[IO.File]::WriteAllLines((Join-Path $raw "bugchecks.txt"), [string[]]$bcLines, $utf8)
+$drvLines = @("# Drivers: device | version | date | provider")
+if (-not $offline) {
+    $drvLines += @(Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceName } | Sort-Object DeviceName | ForEach-Object {
+        "{0} | {1} | {2} | {3}" -f $_.DeviceName, $_.DriverVersion, $(if ($_.DriverDate) { $_.DriverDate.ToString("yyyy-MM-dd") }), $_.DriverProviderName })
+} else { $drvLines += "(not available when run from WinPE)" }
+[IO.File]::WriteAllLines((Join-Path $raw "drivers.txt"), [string[]]$drvLines, $utf8)
+[IO.File]::WriteAllText((Join-Path $raw "disks.txt"), (@{ disks = $disks; volumes = $volumes } | ConvertTo-Json -Depth 6), $utf8)
+
+$zip = $null
+if ($Ticket) {
+    $pc = $env:COMPUTERNAME -replace '[^A-Za-z0-9._-]', ''
+    $zip = Join-Path (Split-Path $Out -Parent) ("themvp-diag-{0}-{1}-{2}.zip" -f $Ticket, $pc, (Get-Date -Format "yyyyMMdd-HHmmss"))
+    Compress-Archive -Path (Join-Path $Out "*") -DestinationPath $zip -Force
+    if (Test-Path $zip) { Write-Host "Report to send: $zip" } else { $zip = $null; Write-Host "Could not create the zip - please send the files in $Out" }
+}
 
 if ($Server -and $JobId) {
     $body = @{ token = $Token; job_id = $JobId; evidence = $report } | ConvertTo-Json -Depth 8

@@ -17,9 +17,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm 
 ```
 
 The same command also works in PowerShell and Windows Terminal. Click **Yes** when
-Windows asks for permission. After about a minute, a `TheMVP-diag-…` folder opens on
-your Desktop with a plain-English summary (`.html`) and the data file (`.json`).
-Send both to us.
+Windows asks for permission. After about a minute, a plain-English summary opens and a
+`themvp-diag-<ticket>-<PC>-<date>-<time>.zip` file appears on your Desktop. Send us that
+one file by replying to your ticket email. (The `TheMVP-diag-…` folder next to it holds the
+same files unzipped.)
 
 ## Linux (Ubuntu, Debian, Fedora)
 
@@ -29,8 +30,17 @@ Open a Terminal and paste:
 u=https://raw.githubusercontent.com/KoushikMVP/pc-health-check/main/linux/themvp-diag.sh; f=$(mktemp); (curl -fsSL $u || wget -qO- $u) > $f && sudo bash $f SID000616; rm -f $f
 ```
 
-After about 4 minutes it writes `~/themvp-diag-<ticket>-<host>-<time>.tar.gz`. Send us that file.
+After about 4 minutes it writes `~/themvp-diag-<ticket>-<host>-<time>.tar.gz`. Send us that file
+by replying to your ticket email.
 Optional load test: add `--stress 15 --gpu-stress 15` after the ticket number.
+
+To check the script before running it, compare its SHA256 with `linux/themvp-diag.sh.sha256`:
+
+```
+curl -fsSL https://raw.githubusercontent.com/KoushikMVP/pc-health-check/main/linux/themvp-diag.sh | sha256sum
+```
+
+After any change to the script, update the checksum: `cd linux && sha256sum themvp-diag.sh > themvp-diag.sh.sha256`.
 
 ## What it does not do
 
